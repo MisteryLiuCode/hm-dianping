@@ -35,12 +35,12 @@ public class LoginInterceptor implements HandlerInterceptor {
 //        Object user = session.getAttribute("user");
 
 
-        if (UserHolder.getUser() == null){
-            //不存在,拦截
-            response.setStatus(401);
-            //拦截
-            return false;
-        }
+//        if (UserHolder.getUser() == null){
+//            //不存在,拦截
+//            response.setStatus(401);
+//            //拦截
+//            return false;
+//        }
         //放行
         return true;
     }

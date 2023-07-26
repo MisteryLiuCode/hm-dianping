@@ -28,6 +28,7 @@ public class MvcConfig implements WebMvcConfigurer {
                 .excludePathPatterns(
                         "/blog/hot",
                         "/voucher/**",
+                        "/voucher-order/**",
                         "/upload/**",
                         "/shop/**",
                         "/shop-type/**",
