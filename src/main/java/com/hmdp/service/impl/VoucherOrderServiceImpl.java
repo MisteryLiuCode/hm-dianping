@@ -8,9 +8,14 @@ import com.hmdp.service.ISeckillVoucherService;
 import com.hmdp.service.IVoucherOrderService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.utils.RedisIdWorker;
+import com.hmdp.utils.SimpleRedisLock;
 import com.hmdp.utils.UserHolder;
 import lombok.extern.slf4j.Slf4j;
+import org.redisson.Redisson;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.aop.framework.AopContext;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -19,7 +24,7 @@ import java.time.LocalDateTime;
 
 /**
  * <p>
- *  服务实现类
+ * 服务实现类
  * </p>
  *
  * @author 虎哥
@@ -27,44 +32,73 @@ import java.time.LocalDateTime;
  */
 @Service
 @Slf4j
-public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, VoucherOrder> implements IVoucherOrderService {
+public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, VoucherOrder>
+        implements IVoucherOrderService {
 
     @Resource
     private ISeckillVoucherService iSeckillVoucherService;
 
     @Resource
+    private StringRedisTemplate redisTemplate;
+
+    @Resource
     private RedisIdWorker redisIdWorker;
 
+    @Resource
+    private Redisson redisson;
 
     @Override
     public Result seckillVoucher(Long voucherId) {
         //查询优惠券
         SeckillVoucher seckillVoucher = iSeckillVoucherService.getById(voucherId);
         //判断秒杀是否开始
-        if(seckillVoucher.getBeginTime().isAfter(LocalDateTime.now())){
+        if (seckillVoucher.getBeginTime().isAfter(LocalDateTime.now())) {
             return Result.fail("秒杀还未开始");
         }
         //判断秒杀是否结束
-        if(seckillVoucher.getEndTime().isBefore(LocalDateTime.now())){
+        if (seckillVoucher.getEndTime().isBefore(LocalDateTime.now())) {
             return Result.fail("秒杀已结束");
         }
         //判断库存是否充足
-        if(seckillVoucher.getStock()<1){
+        if (seckillVoucher.getStock() < 1) {
             return Result.fail("库存不足");
         }
         Long id = UserHolder.getUser().getId();
-        synchronized (id.toString().intern()) {
+
+        //可以用 redis 的 setnx 代替
+        //        synchronized (id.toString().intern()) {
+        //            //获取代理对象
+        //            IVoucherOrderService proxy = (IVoucherOrderService) AopContext.currentProxy();
+        //            return proxy.createVoucherOrder(voucherId);
+        //        }
+        //一个用户一个锁,所以使用 id
+        //            SimpleRedisLock simpleRedisLock = new SimpleRedisLock("order:" + id, redisTemplate);
+        RLock rLock = redisson.getLock("order:" + id);
+        //过期时间要比业务时间执行长，因为如果短的话,可能业务还未执行完,就有新的线程进来,造成并发错误.
+        //            boolean lock = simpleRedisLock.tryLock(1200);
+        boolean lock = rLock.tryLock();
+
+        if (!lock) {
+            //获取锁失败
+            return Result.fail("不允许下单");
+        }
+        try {
             //获取代理对象
             IVoucherOrderService proxy = (IVoucherOrderService) AopContext.currentProxy();
             return proxy.createVoucherOrder(voucherId);
         }
+        finally {
+            //释放锁
+            rLock.unlock();
+        }
+
     }
 
     @Override
     @Transactional
-    public  Result createVoucherOrder(Long voucherId) {
+    public Result createVoucherOrder(Long voucherId) {
         Long userId = UserHolder.getUser().getId();
-        synchronized(userId.toString().intern()){
+        synchronized (userId.toString().intern()) {
             // 5.1.查询订单
             int count = query().eq("user_id", userId).eq("voucher_id", voucherId).count();
             // 5.2.判断是否存在
@@ -74,8 +108,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             }
 
             // 6.扣减库存
-            boolean success = iSeckillVoucherService.update()
-                    .setSql("stock = stock - 1") // set stock = stock - 1
+            boolean success = iSeckillVoucherService.update().setSql("stock = stock - 1") // set stock = stock - 1
                     .eq("voucher_id", voucherId).gt("stock", 0) // where id = ? and stock > 0
                     .update();
             if (!success) {
